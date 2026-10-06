@@ -1,234 +1,137 @@
-from typing import List, Dict
-from random import randint
+import os
+import argparse
+from typing import List, Dict, Callable
+
+import game_engine as ge
+from ai_strategy import STRATEGIES, monte_carlo_strategy
+
+COLOR_RESET = "\033[0m"
+COLOR_X = "\033[91m"  # Red
+COLOR_O = "\033[94m"  # Blue
+COLOR_GRID = "\033[90m"  # Dark gray
+COLOR_NUMS = "\033[93m"  # Yellow
 
 
-
-def is_won(state):
-    """
-    Funkce zkontroluje vsechny radky, sloupce a diagonaly pro urceni vyhry
-    """
-    # Radky 
-    for i in range(len(state)):
-        # Sloupce
-        for j in range(0, len(state[i])):
-            # Kontrola vsech moznych 4ric v kazdem radku
-            if j <= len(state[0]) - 4:
-                test_row_l = state[i][j:(j + 4)]
-
-                if len(set(test_row_l)) == 1 and test_row_l[0] != " ":
-                    return True
-
-    
-            # Kontrola vsech moznych 4ric v kazdem sloupci
-            if i <= len(state) - 4:
-                test_col_l = [state[i + k][j] for k in range(4)]
-
-                if len(set(test_col_l)) == 1 and test_col_l[0] != " ":
-                    return True
+def clear_screen() -> None:
+    os.system("cls" if os.name == "nt" else "clear")
 
 
-            # Kontrola vsech moznych 4ric v kazde diagonale do prava
-            if i <= len(state) - 4 and j <= len(state[0]) - 4:
-                test_diag_right_l = [state[i + k][j + k] for k in range(4)]
-
-                if len(set(test_diag_right_l)) == 1 and test_diag_right_l[0] != " ":
-                    return True
-
-
-            # Kontrola vsech moznych 4ric v kazde diagonale do leva
-            if i >= 3 and j <= len(state[0]) - 4:
-                test_diag_left_l = [state[i - k][j + k] for k in range(4)]
-
-                if len(set(test_diag_left_l)) == 1 and test_diag_left_l[0] != " ":
-                    return True
-
-    return False
+def format_cell(cell: str) -> str:
+    if cell == "X":
+        return f"{COLOR_X}X{COLOR_RESET}"
+    if cell == "O":
+        return f"{COLOR_O}O{COLOR_RESET}"
+    return " "
 
 
-
-def is_tie(state):
-    """
-    Kontroluje remizu - zda neni je hraci plan plny
-    """
-    return all(cell != " " for row in state for cell in row)
-    
-
-
-def valid_move(move, state):
-    """
-    Kontroluje platnost tahu -> meze hraciho planu + mezera v prvni row daneho col "move"
-    """
-    return move < len(state[0]) and move >= 0 and state[0][move] == " "
-
+def human_move(state: List[List[str]]) -> int:
+    cols = len(state[0])
+    while True:
+        raw_input = input(
+            f"Which column do you want to play in? (0 to {cols - 1}): "
+        ).strip()
+        try:
+            move = int(raw_input)
+            if ge.valid_move(move, state):
+                return move
+            print(f"Invalid move. Column {move} is full or out of bounds.")
+        except ValueError:
+            print("Please enter a valid integer.")
 
 
-def make_move(move, state, symbol):
-    """
-    Provede tah ve stavu "state" ve sloupci "move" symbolem hrace "symbol"
-    """
-    move_col = [row[move] for row in state]
+def show_state(
+    state: List[List[str]], last_action: str = "", current_status: str = ""
+) -> None:
+    clear_screen()
+    print(last_action if last_action else "")
+    print(current_status if current_status else "")
+    print()
 
-    for i in range(len(move_col) - 1, -1, -1):
-        if move_col[i] == " ":
-            state[i][move] = symbol
-            return state
-    
-
-
-def human_move(state):
-    """
-    Tah hrace - vola input dokud tah neni platny
-    """
-    move = int(input(f"Do jakeho sloupce chces hrat? (od 0 do {len(state[0]) - 1})?"))
-
-    while not valid_move(move, state):
-        move = int(input(f"Do jakeho sloupce chces hrat? (od 0 do {len(state[0]) - 1})?"))
-
-    return move
-
-
-
-def random_strategy(state: List[List[str]]) -> int:
-    """
-    Vrati nahodny platny tah pro dany stav hry
-    """
-    move = randint(0, len(state[0]) - 1)
-
-    while not valid_move(move, state):
-        move = randint(0, len(state[0]) - 1)
-
-    return move
-    
-
-
-def one_sim(state, move, symbols):
-    """
-    Provede jednu simulaci hry od daneho stavu, kde PC zahraje kandidatni tah "move",
-    kde se hraci i pocitac stridaji s nahodnymi tahy
-    Vraci 1 pokud vyhraje pocitac, -1 pokud vyhraje hrac, 0 pokud je remiza
-    """
-    sim_state = [row.copy() for row in state]
-    sim_state = make_move(move, sim_state, symbols["pc"])
-
-    # kontrola okamzite vyhry stroje
-    if is_won(sim_state):
-        return 1
-
-    current_player = "human"
-
-    while not is_tie(sim_state):
-        if current_player == "human":
-            h_move = random_strategy(sim_state)
-            sim_state = make_move(h_move, sim_state, symbols["human"])
-
-            if is_won(sim_state):
-                # vyhra cloveka
-                return -1 
-
-        else:
-            pc_move = random_strategy(sim_state)
-            sim_state = make_move(pc_move, sim_state, symbols["pc"])
-
-            if is_won(sim_state):
-                # vyhra stroje
-                return 1
-
-        current_player = [k for k in symbols.keys() if k != current_player][0]
-
-    # remiza
-    return 0 
-
-
-
-def monte_carlo_sim(state, move, symbols, sim_count=300):
-    """
-    Pro kandidatni tah "move" spusti jednu iteraci monte carlo simulace "sim_count" krat
-    spocita ocekavany vysledek pro tento kandidatni tah
-    """
-    wins = []
-
-    for _ in range(sim_count):
-        result = one_sim(state, move, symbols)
-        wins.append(result)
-
-    return sum(wins) / len(wins)
-
-    
-
-def strategy(state: List[List[str]], symbols: Dict[str, str]) -> int:
-    """
-    funkce pomoci valid_move najde vsechny platne tahy
-    pro kazdy z nich spusti monte_carlo_sim a vypocita pravdepodobnost vyhry
-    vrati tah s nejvyssim ocekavanym vysledkem
-    """
-    candidate_moves = [move for move in range(0, len(state[0])) if valid_move(move, state)] 
-    exp_results = []
-
-    for move in candidate_moves:
-        exp_result = monte_carlo_sim(state, move, symbols)
-        exp_results.append(exp_result)
-
-    best_exp_result_move =  max(range(len(exp_results)), key=lambda i: exp_results[i])
-
-    return candidate_moves[best_exp_result_move]
-
-
-
-def show_state(state: List[List[str]]) -> None:
-    separator_list = ["-" for _col in state[0]]
-    col_list = [i for i in range(len(state[0]))]
-
+    cols = len(state[0])
     for row in state:
-        print(*row)
+        row_str = " ".join(format_cell(cell) for cell in row)
+        print(f"| {row_str} |")
 
-    print(*separator_list)
-    print(*col_list)
-
-
-
-
-
-def tictactoe(rows: int, cols: int, human_starts: bool = True) -> None:
-    # vytvoreni prazdneho pole
-    state = [[" " for _col in range(cols)] for _row in range(rows)]
-    symbols = {}
-
-    if human_starts:
-        symbols["human"] = "X"
-        symbols["pc"] = "O"
-    else:
-        symbols["human"] = "O"
-        symbols["pc"] = "X"
+    print(f"{COLOR_GRID}+" + "---" * cols + f"-+{COLOR_RESET}")
+    indices_str = " ".join(f"{COLOR_NUMS}{i}{COLOR_RESET}" for i in range(cols))
+    print(f"  {indices_str}  \n")
 
 
-    current_player = [k for k, v in symbols.items() if v == "X"][0]
+def tictactoe(
+    rows: int = 8,
+    cols: int = 8,
+    human_starts: bool = True,
+    ai_strategy_func: Callable[
+        [List[List[str]], Dict[str, str]], int
+    ] = monte_carlo_strategy,
+) -> None:
+    state = [[" " for _ in range(cols)] for _ in range(rows)]
+    symbols = {
+        "human": "X" if human_starts else "O",
+        "pc": "O" if human_starts else "X",
+    }
 
-    while not is_tie(state):
+    current_player = "human" if human_starts else "pc"
+    last_action = "Game begins."
+
+    while not ge.is_tie(state):
         if current_player == "human":
-            print("Na tahu je hrac")
+            show_state(state, last_action, "Your turn...")
             h_move = human_move(state)
-            state = make_move(h_move, state, symbols["human"])
+            state = ge.make_move(h_move, state, symbols["human"])
+            last_action = (
+                f"Player ({format_cell(symbols['human'])}) played in column {h_move}."
+            )
 
-            show_state(state)
-            if is_won(state):
-                print("Vyhral jsi!")
+            if ge.is_won(state):
+                show_state(
+                    state,
+                    last_action,
+                    f"Game over: Player ({format_cell(symbols['human'])}) won!",
+                )
                 return
-
+            current_player = "pc"
         else:
-            print("Na tahu je pocitac")
-            pc_move = strategy(state, symbols)
-            state = make_move(pc_move, state, symbols["pc"])
-            print(f"Pocitac hraje do sloupce cislo {pc_move}")
+            show_state(state, last_action, "Computer's turn...")
+            pc_move = ai_strategy_func(state, symbols)
+            state = ge.make_move(pc_move, state, symbols["pc"])
+            last_action = (
+                f"Computer ({format_cell(symbols['pc'])}) played in column {pc_move}."
+            )
 
-            show_state(state)
-            if is_won(state):
-                print("Vyhral pocitac!")
+            if ge.is_won(state):
+                show_state(
+                    state,
+                    last_action,
+                    f"Game over: Computer ({format_cell(symbols['pc'])}) won!",
+                )
                 return
+            current_player = "human"
 
-        current_player = [k for k in symbols.keys() if k != current_player][0]
-
-    print("Remiza")
-
+    show_state(state, last_action, "Game over: Tie!")
 
 
-tictactoe(6, 6, human_starts=False)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Connect Four / TicTacToe Game")
+    parser.add_argument(
+        "--ai",
+        type=str,
+        default="mc",
+        choices=list(STRATEGIES.keys()),
+        help="Select AI strategy: mc (Monte Carlo) or cnn (Reinforcement Learning)",
+    )
+    parser.add_argument("--rows", type=int, default=6, help="Board rows")
+    parser.add_argument("--cols", type=int, default=6, help="Board columns")
+    parser.add_argument(
+        "--human-first", action="store_true", help="Set flag if human starts first"
+    )
+
+    args = parser.parse_args()
+
+    selected_ai = STRATEGIES[args.ai]
+    tictactoe(
+        rows=args.rows,
+        cols=args.cols,
+        human_starts=args.human_first,
+        ai_strategy_func=selected_ai,
+    )
