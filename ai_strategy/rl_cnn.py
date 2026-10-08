@@ -1,28 +1,23 @@
 import os
-from typing import Dict, List, Optional
 import torch
 from torch.distributions import Categorical
 
 import game_engine as ge
-from rl_cnn.model import PolicyCNN, state_to_tensor
+from rl_cnn.model import ActorCriticCNN, PolicyCNN, state_to_tensor
 
 # Cached global instance to avoid reloading model weights on every move
-_MODEL: Optional[PolicyCNN] = None
+_MODEL: ActorCriticCNN | PolicyCNN | None = None
 _DEVICE: str = (
     "cuda"
     if torch.cuda.is_available()
     else ("mps" if torch.backends.mps.is_available() else "cpu")
 )
-_DEFAULT_WEIGHTS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "rl_cnn",
-    "connect4_policy.pt",
-)
+_DEFAULT_WEIGHTS_PATH = "rl_cnn/connect4_actor_r8_c8.pt"
 
 
 def load_model(
     weights_path: str = _DEFAULT_WEIGHTS_PATH, rows: int = 6, cols: int = 6
-) -> PolicyCNN:
+) -> PolicyCNN | ActorCriticCNN:
     """Loads and caches the PolicyCNN model in evaluation mode."""
     global _MODEL
     if _MODEL is None:
@@ -30,7 +25,7 @@ def load_model(
             raise FileNotFoundError(
                 f"Trained model weights not found at: {weights_path}\n"
             )
-        model = PolicyCNN(rows=rows, cols=cols).to(_DEVICE)
+        model = ActorCriticCNN(rows=rows, cols=cols).to(_DEVICE)
         state_dict = torch.load(weights_path, map_location=_DEVICE)
         model.load_state_dict(state_dict)
         model.eval()
@@ -41,7 +36,7 @@ def load_model(
 def sample_action(
     logits: torch.Tensor,
     temperature: float,
-    top_k: Optional[int],
+    top_k: int | None,
 ) -> int:
     """Selects an action index using argmax, temperature scaling, and/or top-k sampling."""
     # Deterministic selection when temperature is effectively zero
@@ -68,11 +63,11 @@ def sample_action(
 
 
 def rl_cnn_strategy(
-    state: List[List[str]],
-    symbols: Dict[str, str],
+    state: list[list[str]],
+    symbols: dict[str, str],
     weights_path: str = _DEFAULT_WEIGHTS_PATH,
     temperature: float = 0.2,
-    top_k: Optional[int] = None,
+    top_k: int | None = None,
 ) -> int:
     """Decision strategy function matching the Connect Four engine interface."""
     rows = len(state)
@@ -91,7 +86,8 @@ def rl_cnn_strategy(
         mask_tensor = torch.tensor([valid_moves], dtype=torch.bool, device=_DEVICE)
 
         # Forward pass returning shape (cols,)
-        logits = model(s_tensor, valid_mask=mask_tensor).squeeze(0)
+        logits, _ = model(s_tensor, valid_mask=mask_tensor)
+        logits = logits.squeeze(0)
 
         # Pick column using specified inference strategy
         chosen_col = sample_action(logits, temperature=temperature, top_k=top_k)

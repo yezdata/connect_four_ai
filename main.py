@@ -1,114 +1,60 @@
-import os
 import argparse
-from typing import List, Dict, Callable
+from typing import Callable
 
 import game_engine as ge
 from ai_strategy import STRATEGIES, monte_carlo_strategy
 
-COLOR_RESET = "\033[0m"
-COLOR_X = "\033[91m"  # Red
-COLOR_O = "\033[94m"  # Blue
-COLOR_GRID = "\033[90m"  # Dark gray
-COLOR_NUMS = "\033[93m"  # Yellow
-
-
-def clear_screen() -> None:
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-def format_cell(cell: str) -> str:
-    if cell == "X":
-        return f"{COLOR_X}X{COLOR_RESET}"
-    if cell == "O":
-        return f"{COLOR_O}O{COLOR_RESET}"
-    return " "
-
-
-def human_move(state: List[List[str]]) -> int:
-    cols = len(state[0])
-    while True:
-        raw_input = input(
-            f"Which column do you want to play in? (0 to {cols - 1}): "
-        ).strip()
-        try:
-            move = int(raw_input)
-            if ge.valid_move(move, state):
-                return move
-            print(f"Invalid move. Column {move} is full or out of bounds.")
-        except ValueError:
-            print("Please enter a valid integer.")
-
-
-def show_state(
-    state: List[List[str]], last_action: str = "", current_status: str = ""
-) -> None:
-    clear_screen()
-    print(last_action if last_action else "")
-    print(current_status if current_status else "")
-    print()
-
-    cols = len(state[0])
-    for row in state:
-        row_str = " ".join(format_cell(cell) for cell in row)
-        print(f"| {row_str} |")
-
-    print(f"{COLOR_GRID}+" + "---" * cols + f"-+{COLOR_RESET}")
-    indices_str = " ".join(f"{COLOR_NUMS}{i}{COLOR_RESET}" for i in range(cols))
-    print(f"  {indices_str}  \n")
-
 
 def tictactoe(
-    rows: int = 8,
-    cols: int = 8,
-    human_starts: bool = True,
+    rows: int,
+    cols: int,
+    human_starts: bool = False,
     ai_strategy_func: Callable[
-        [List[List[str]], Dict[str, str]], int
+        [list[list[str]], dict[str, str]], int
     ] = monte_carlo_strategy,
 ) -> None:
     state = [[" " for _ in range(cols)] for _ in range(rows)]
     symbols = {
         "human": "X" if human_starts else "O",
-        "pc": "O" if human_starts else "X",
+        "ai": "O" if human_starts else "X",
     }
 
-    current_player = "human" if human_starts else "pc"
+    current_player = "human" if human_starts else "ai"
     last_action = "Game begins."
 
     while not ge.is_tie(state):
         if current_player == "human":
-            show_state(state, last_action, "Your turn...")
-            h_move = human_move(state)
+            ge.show_state(state, last_action, "Your turn...")
+            h_move = monte_carlo_strategy(state, symbols)
             state = ge.make_move(h_move, state, symbols["human"])
-            last_action = (
-                f"Player ({format_cell(symbols['human'])}) played in column {h_move}."
-            )
+            last_action = f"Player ({ge.format_cell(symbols['human'])}) played in column {h_move}."
 
             if ge.is_won(state):
-                show_state(
+                ge.show_state(
                     state,
                     last_action,
-                    f"Game over: Player ({format_cell(symbols['human'])}) won!",
+                    f"Game over: Player ({ge.format_cell(symbols['human'])}) won!",
                 )
                 return
-            current_player = "pc"
+            current_player = "ai"
         else:
-            show_state(state, last_action, "Computer's turn...")
-            pc_move = ai_strategy_func(state, symbols)
-            state = ge.make_move(pc_move, state, symbols["pc"])
+            ge.show_state(state, last_action, "AI's turn...")
+            ai_move = ai_strategy_func(state, symbols)
+            state = ge.make_move(ai_move, state, symbols["ai"])
             last_action = (
-                f"Computer ({format_cell(symbols['pc'])}) played in column {pc_move}."
+                f"AI ({ge.format_cell(symbols['ai'])}) played in column {ai_move}."
             )
 
             if ge.is_won(state):
-                show_state(
+                ge.show_state(
                     state,
                     last_action,
-                    f"Game over: Computer ({format_cell(symbols['pc'])}) won!",
+                    f"Game over: AI ({ge.format_cell(symbols['ai'])}) won!",
                 )
                 return
             current_player = "human"
 
-    show_state(state, last_action, "Game over: Tie!")
+    ge.show_state(state, last_action, "Game over: Tie!")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,155 @@
+import os
+import torch
+import torch.optim as optim
+from torch.distributions import Categorical
+import torch.nn.functional as F
+
+import game_engine as ge
+from rl_cnn.model import ActorCriticCNN, state_to_tensor
+
+
+def play_self_play_game(
+    model: ActorCriticCNN, rows: int, cols: int, device: str = "cpu"
+):
+    """
+    Play 1 game, where the CNN play for both players.
+    Saves log_probs of the moves and entropy.
+    """
+    state = [[" " for _ in range(cols)] for _ in range(rows)]
+    symbols = ["X", "O"]
+    turn_idx = 0  # 0 for X, 1 for O
+
+    # save: (turn_idx_who_played, log_prob, entropy)
+    history = []
+
+    while not ge.is_tie(state):
+        current_sym = symbols[turn_idx]
+        opponent_sym = symbols[1 - turn_idx]
+
+        # from current player pov
+        s_tensor = state_to_tensor(state, current_sym, opponent_sym, device=device)
+
+        # mask of valid moves
+        valid_moves = [ge.valid_move(c, state) for c in range(cols)]
+        mask_tensor = torch.tensor([valid_moves], dtype=torch.bool, device=device)
+
+        logits, value = model(s_tensor, valid_mask=mask_tensor)
+        dist = Categorical(logits=logits)
+
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+
+        chosen_col = action.item()
+        ge.make_move(chosen_col, state, current_sym)
+
+        history.append((turn_idx, log_prob, entropy, value))
+
+        if ge.is_won(state):
+            winner_idx = turn_idx
+            return history, winner_idx, state
+
+        turn_idx = 1 - turn_idx
+
+    # tie
+    return history, -1, state
+
+
+def train(
+    num_episodes: int,
+    rows: int,
+    cols: int,
+    lr: float = 1e-4,
+    weight_decay: float = 1e-4,
+    gamma: float = 0.95,
+    entropy_coef: float = 0.03,
+    value_coef: float = 0.5,
+    save_path: str = "rl_cnn/connect4_actor.pt",
+):
+
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
+    print(f"Device: {device}")
+
+    model = ActorCriticCNN(rows=rows, cols=cols).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    win_stats = {"X": 0, "O": 0, "Tie": 0}
+
+    for episode in range(1, num_episodes + 1):
+        model.train()
+        history, winner_idx, state = play_self_play_game(
+            model, rows, cols, device=device
+        )
+
+        if winner_idx == 0:
+            win_stats["X"] += 1
+        elif winner_idx == 1:
+            win_stats["O"] += 1
+        else:
+            win_stats["Tie"] += 1
+
+        policy_losses = []
+        value_losses = []
+        entropy_losses = []
+
+        total_steps = len(history)
+
+        # backpropagation of rewards
+        for step, (p_idx, log_prob, entropy, value) in enumerate(history):
+            if winner_idx == -1:
+                reward = 0.0
+            else:
+                # winner gets +1, loser -1: disconted by distance to result
+                steps_to_end = total_steps - step - 1
+                base_reward = 1.0 if p_idx == winner_idx else -1.0
+                reward = base_reward * (gamma**steps_to_end)
+
+            r_tensor = torch.tensor([reward], dtype=torch.float32, device=device)
+
+            # actual reward - prediction of reward
+            advantage = r_tensor - value.detach().squeeze()
+
+            policy_losses.append(-log_prob * advantage)
+
+            # MSE of reward
+            value_losses.append(F.mse_loss(value.squeeze(0), r_tensor))
+
+            entropy_losses.append(-entropy)
+
+        optimizer.zero_grad()
+        loss = (
+            torch.stack(policy_losses).mean()
+            + value_coef * torch.stack(value_losses).mean()
+            + entropy_coef * torch.stack(entropy_losses).mean()
+        )
+        loss.backward()
+
+        # grad clipping for stable train
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        if episode % 250 == 0:
+            print(
+                f"Episode {episode:5d}/{num_episodes} | \n"
+                f"Last 250 games -> X wins: {win_stats['X']}, O wins: {win_stats['O']}, Ties: {win_stats['Tie']} | \n"
+                f"Loss: {loss.item():.4f} | Entropy: {-torch.stack(entropy_losses).mean().item():.4f} | Value Loss: {torch.stack(value_losses).mean().item():.4f} | Policy Loss: {torch.stack(policy_losses).mean().item():.4f}"
+            )
+            win_stats = {"X": 0, "O": 0, "Tie": 0}
+
+            ge.show_state(
+                state,
+                last_action="Last game played.",
+                current_status="Training in progress...",
+                is_training=True,
+            )
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save(model.state_dict(), save_path)
+
+
+if __name__ == "__main__":
+    train(num_episodes=10_000, rows=6, cols=6)

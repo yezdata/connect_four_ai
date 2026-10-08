@@ -1,17 +1,13 @@
 import os
-import random
 import torch
 import torch.optim as optim
 from torch.distributions import Categorical
-from typing import List
 
 import game_engine as ge
 from rl_cnn.model import PolicyCNN, state_to_tensor
 
 
-def play_self_play_game(
-    model: PolicyCNN, rows: int = 8, cols: int = 8, device: str = "cpu"
-):
+def play_self_play_game(model: PolicyCNN, rows: int, cols: int, device: str = "cpu"):
     """
     Play 1 game, where the CNN play for both players.
     Saves log_probs of the moves and entropy.
@@ -47,18 +43,18 @@ def play_self_play_game(
 
         if ge.is_won(state):
             winner_idx = turn_idx
-            return history, winner_idx
+            return history, winner_idx, state
 
         turn_idx = 1 - turn_idx
 
     # tie
-    return history, -1
+    return history, -1, state
 
 
 def train(
-    num_episodes: int = 5000,
-    rows: int = 8,
-    cols: int = 8,
+    num_episodes: int,
+    rows: int,
+    cols: int,
     lr: float = 1e-3,
     gamma: float = 0.95,
     entropy_coef: float = 0.01,
@@ -79,7 +75,9 @@ def train(
 
     for episode in range(1, num_episodes + 1):
         model.train()
-        history, winner_idx = play_self_play_game(model, rows, cols, device=device)
+        history, winner_idx, state = play_self_play_game(
+            model, rows, cols, device=device
+        )
 
         if winner_idx == 0:
             win_stats["X"] += 1
@@ -109,8 +107,8 @@ def train(
         # total loss (Loss = Policy Loss + Entropy Loss)
         optimizer.zero_grad()
         loss = (
-            torch.stack(policy_losses).sum()
-            + entropy_coef * torch.stack(entropy_losses).sum()
+            torch.stack(policy_losses).mean()
+            + entropy_coef * torch.stack(entropy_losses).mean()
         )
         loss.backward()
 
@@ -120,11 +118,18 @@ def train(
 
         if episode % 250 == 0:
             print(
-                f"Episode {episode:5d}/{num_episodes} | "
-                f"Last 250 games -> X wins: {win_stats['X']}, O wins: {win_stats['O']}, Ties: {win_stats['Tie']} | "
-                f"Loss: {loss.item():.4f}"
+                f"Episode {episode:5d}/{num_episodes} | \n"
+                f"Last 250 games -> X wins: {win_stats['X']}, O wins: {win_stats['O']}, Ties: {win_stats['Tie']} | \n"
+                f"Loss: {loss.item():.4f} | Entropy: {-torch.stack(entropy_losses).mean().item():.4f} | Policy Loss: {torch.stack(policy_losses).mean().item():.4f}"
             )
             win_stats = {"X": 0, "O": 0, "Tie": 0}
+
+            ge.show_state(
+                state,
+                last_action="Last game played.",
+                current_status="Training in progress...",
+                is_training=True,
+            )
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
@@ -132,4 +137,4 @@ def train(
 
 
 if __name__ == "__main__":
-    train(num_episodes=5000, rows=8, cols=8)
+    train(num_episodes=5000, rows=6, cols=6)

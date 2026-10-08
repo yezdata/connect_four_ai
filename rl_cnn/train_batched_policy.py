@@ -1,7 +1,4 @@
-# TODO: vizualizovat (show_state) posledni state vzdy po printu + i v train_single_env
-
 import os
-from typing import List, Tuple
 import random
 import torch
 import torch.optim as optim
@@ -14,7 +11,7 @@ from rl_cnn.model import PolicyCNN
 class BatchedConnectFourEnv:
     """Manages N concurrent Connect Four game environments with mixed opponent types."""
 
-    def __init__(self, num_envs: int = 256, rows: int = 8, cols: int = 8):
+    def __init__(self, num_envs: int, rows: int, cols: int):
         self.num_envs = num_envs
         self.rows = rows
         self.cols = cols
@@ -42,7 +39,7 @@ class BatchedConnectFourEnv:
         ]
         self.turn_idx = [0 for _ in range(self.num_envs)]
         # History stores only the Neural Network's snapshots: (state, mask, action, turn_idx)
-        self.histories: List[List[Tuple[torch.Tensor, torch.Tensor, int, int]]] = [
+        self.histories: list[list[tuple[torch.Tensor, torch.Tensor, int, int]]] = [
             [] for _ in range(self.num_envs)
         ]
 
@@ -63,15 +60,15 @@ class BatchedConnectFourEnv:
             return True
         return False
 
-    def get_batched_states_and_masks(
-        self, device: str = "cpu"
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Generates board tensors directly on CPU."""
+    def get_batched_states_and_masks(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Generates board tensors"""
         states_tensor = torch.zeros(
-            (self.num_envs, 2, self.rows, self.cols), dtype=torch.float32, device=device
+            (self.num_envs, 2, self.rows, self.cols),
+            dtype=torch.float32,
         )
         masks_tensor = torch.zeros(
-            (self.num_envs, self.cols), dtype=torch.bool, device=device
+            (self.num_envs, self.cols),
+            dtype=torch.bool,
         )
 
         for i in range(self.num_envs):
@@ -96,10 +93,10 @@ class BatchedConnectFourEnv:
 
 
 def train_batched(
-    total_completed_games: int = 10000,
-    num_envs: int = 64,
-    rows: int = 8,
-    cols: int = 8,
+    total_completed_games: int,
+    num_envs: int,
+    rows: int,
+    cols: int,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
     gamma: float = 0.95,
@@ -128,9 +125,9 @@ def train_batched(
         # 1. Rollout phase: pure inference
         model.eval()
         with torch.no_grad():
-            states, masks = env.get_batched_states_and_masks(device=device)
+            states, masks = env.get_batched_states_and_masks()
             logits = model(
-                states, valid_mask=masks
+                states.to(device), valid_mask=masks.to(device)
             )  # parallel forward pass across all envs
             dist = Categorical(logits=logits)
             actions = dist.sample()  # Shape: (num_envs,)
@@ -218,6 +215,10 @@ def train_batched(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
+            # clear off-policy histories
+            for i in range(num_envs):
+                env.histories[i].clear()
+
             finished_trajectories.clear()
 
             updates_count += 1
@@ -229,19 +230,25 @@ def train_batched(
                 )
                 stats = {"X": 0, "O": 0, "Tie": 0}
 
+                ge.show_state(
+                    env.boards[0],
+                    last_action="Sample board state after training update.",
+                    current_status="",
+                    is_training=True,
+                )
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(model.state_dict(), save_path)
-    print(f"\nTraining completed. Weights successfully saved to: {save_path}")
 
 
 if __name__ == "__main__":
     train_batched(
-        total_completed_games=50_000,
-        num_envs=256,
-        rows=8,
-        cols=8,
-        lr=8e-4,
+        total_completed_games=500_000,
+        num_envs=2048,
+        rows=6,
+        cols=6,
+        lr=2e-4,
         entropy_coef=0.03,
         gamma=1.0,
-        batch_update_games=256,
+        batch_update_games=2048,
     )
