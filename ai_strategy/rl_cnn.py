@@ -12,7 +12,7 @@ _DEVICE: str = (
     if torch.cuda.is_available()
     else ("mps" if torch.backends.mps.is_available() else "cpu")
 )
-_DEFAULT_WEIGHTS_PATH = "rl_cnn/connect4_actor_r8_c8.pt"
+_DEFAULT_WEIGHTS_PATH = "rl_cnn/models/connect4_actor_critic_r8_c8.pt"
 
 
 def load_model(
@@ -74,7 +74,7 @@ def rl_cnn_strategy(
     cols = len(state[0])
     model = load_model(weights_path=weights_path, rows=rows, cols=cols)
 
-    current_sym = symbols["pc"]
+    current_sym = symbols["ai"]
     opponent_sym = symbols["human"]
 
     with torch.no_grad():

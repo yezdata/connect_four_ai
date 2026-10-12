@@ -25,7 +25,7 @@ def tictactoe(
     while not ge.is_tie(state):
         if current_player == "human":
             ge.show_state(state, last_action, "Your turn...")
-            h_move = monte_carlo_strategy(state, symbols)
+            h_move = ge.human_move(state)
             state = ge.make_move(h_move, state, symbols["human"])
             last_action = f"Player ({ge.format_cell(symbols['human'])}) played in column {h_move}."
 
@@ -73,6 +73,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if args.ai == "cnn" and (args.rows != 8 or args.cols != 8):
+        raise ValueError(
+            "The CNN strategy is only supported for a 8x8 board. Please use --rows 8 --cols 8."
+        )
 
     selected_ai = STRATEGIES[args.ai]
     tictactoe(

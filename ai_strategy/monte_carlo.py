@@ -9,7 +9,7 @@ def random_strategy(state: list[list[str]]) -> int:
 
 def one_sim(state: list[list[str]], move: int, symbols: dict[str, str]) -> int:
     sim_state = [row.copy() for row in state]
-    sim_state = ge.make_move(move, sim_state, symbols["pc"])
+    sim_state = ge.make_move(move, sim_state, symbols["ai"])
 
     if ge.is_won(sim_state):
         return 1
@@ -23,12 +23,12 @@ def one_sim(state: list[list[str]], move: int, symbols: dict[str, str]) -> int:
             if ge.is_won(sim_state):
                 return -1
         else:
-            pc_move = random_strategy(sim_state)
-            sim_state = ge.make_move(pc_move, sim_state, symbols["pc"])
+            ai_move = random_strategy(sim_state)
+            sim_state = ge.make_move(ai_move, sim_state, symbols["ai"])
             if ge.is_won(sim_state):
                 return 1
 
-        current_player = "pc" if current_player == "human" else "human"
+        current_player = "ai" if current_player == "human" else "human"
 
     return 0
 

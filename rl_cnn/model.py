@@ -57,11 +57,11 @@ class ActorCriticCNN(nn.Module):
 
         # Value Head (Critic): evaluates state of board
         self.value_head = nn.Sequential(
-            nn.Conv2d(channels, 1, kernel_size=1),  # bottleneck
-            nn.GroupNorm(1, 1),
+            nn.Conv2d(channels, 2, kernel_size=1),  # bottleneck
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(1 * rows * cols, 256),
+            nn.Linear(2 * rows * cols, 256),
+            nn.LayerNorm(256),
             nn.ReLU(),
             nn.Linear(256, 1),
             nn.Tanh(),
@@ -76,9 +76,7 @@ class ActorCriticCNN(nn.Module):
         value = self.value_head(h)
 
         if valid_mask is not None:
-            logits = torch.where(
-                valid_mask, logits, torch.tensor(-1e4, device=logits.device)
-            )
+            logits = logits.masked_fill(~valid_mask, -1e4)
 
         return logits, value
 
@@ -126,9 +124,7 @@ class PolicyCNN(nn.Module):
 
         if valid_mask is not None:
             # non-valid moves are set to -inf -> after softmax 0 prob
-            logits = torch.where(
-                valid_mask, logits, torch.tensor(-1e4, device=logits.device)
-            )
+            logits = logits.masked_fill(~valid_mask, -1e4)
 
         return logits
 

@@ -1,5 +1,4 @@
 import os
-import random
 
 import torch
 import torch.nn.functional as F
@@ -16,15 +15,6 @@ class BatchedConnectFourEnv:
         self.rows = rows
         self.cols = cols
         self.symbols = ["X", "O"]
-
-        self.env_types = [0] * num_envs
-        quarter = num_envs // 4
-        half = num_envs // 2
-
-        for i in range(half, half + quarter):
-            self.env_types[i] = 1
-        for i in range(half + quarter, num_envs):
-            self.env_types[i] = 2
 
         self.reset_all()
 
@@ -44,15 +34,6 @@ class BatchedConnectFourEnv:
         ]
         self.turn_idx[env_idx] = 0
         self.histories[env_idx] = []
-
-    def is_random_turn(self, env_idx: int) -> bool:
-        etype = self.env_types[env_idx]
-        cur_turn = self.turn_idx[env_idx]
-        if etype == 1 and cur_turn == 1:
-            return True
-        if etype == 2 and cur_turn == 0:
-            return True
-        return False
 
     def get_batched_states_and_masks(
         self, device: str
@@ -86,16 +67,18 @@ def train_batched(
     total_completed_games: int,
     num_envs: int,
     batch_update_games: int,
+    minibatch_size: int,
     rows: int,
     cols: int,
+    save_path: str,
     checkpoint_interval: int = 400,
     lr: float = 1e-4,
-    gamma: float = 0.95,
+    gamma: float = 0.99,
     entropy_coef: float = 0.03,
     value_coef: float = 0.5,
-    save_path: str = "rl_cnn/connect4_actor",
 ):
-    save_path = f"{save_path}_r{rows}_c{cols}.pt"
+    os.makedirs(save_path, exist_ok=True)
+    model_path = f"connect4_actor_critic_r{rows}_c{cols}.pt"
 
     device = (
         "cuda"
@@ -128,21 +111,16 @@ def train_batched(
             dist = Categorical(logits=logits)
             actions = dist.sample()
 
+        actions_cpu = actions.detach().cpu().tolist()
+        states_cpu = states.detach().cpu()
+        masks_cpu = masks.detach().cpu()
+
         # state step
         for i in range(num_envs):
             cur_turn = env.turn_idx[i]
             board = env.boards[i]
-            is_random = env.is_random_turn(i)
-
-            if is_random:
-                valid_cols = torch.where(masks[i])[0].tolist()
-                act = random.choice(valid_cols)
-            else:
-                act = actions[i].item()
-                env.histories[i].append(
-                    (states[i].cpu(), masks[i].cpu(), act, cur_turn)
-                )
-
+            act = actions_cpu[i]
+            env.histories[i].append((states_cpu[i], masks_cpu[i], act, cur_turn))
             ge.make_move(act, board, env.symbols[cur_turn])
 
             if ge.is_won(board):
@@ -171,7 +149,7 @@ def train_batched(
                     if winner == -1:
                         ret = 0.0
                     else:
-                        steps_to_end = n_steps - step - 1
+                        steps_to_end = (n_steps - step - 1) // 2
                         base_reward = 1.0 if p_idx == winner else -1.0
                         ret = base_reward * (gamma**steps_to_end)
 
@@ -181,47 +159,78 @@ def train_batched(
                     b_returns.append(ret)
 
             # create train tensors
-            b_states = torch.stack(b_states).to(device)
-            b_masks = torch.stack(b_masks).to(device)
-            b_actions = torch.tensor(b_actions, dtype=torch.long, device=device)
-            b_returns = torch.tensor(b_returns, dtype=torch.float32, device=device)
+            b_states = torch.stack(b_states)
+            b_masks = torch.stack(b_masks)
+            b_actions = torch.tensor(b_actions, dtype=torch.long)
+            b_returns = torch.tensor(b_returns, dtype=torch.float32)
+
+            total_samples = len(b_returns)
+            indices = torch.randperm(total_samples)
 
             model.train()
             optimizer.zero_grad()
 
-            logits, values = model(b_states, valid_mask=b_masks)
-            dist = Categorical(logits=logits)
+            total_loss_accum = 0.0
+            total_pol_accum = 0.0
+            total_val_accum = 0.0
+            total_ent_accum = 0.0
 
-            log_probs = dist.log_prob(b_actions)
-            entropies = dist.entropy()
+            # grad accumulation over minibatches
+            for start_idx in range(0, total_samples, minibatch_size):
+                end_idx = min(start_idx + minibatch_size, total_samples)
+                mb_idx = indices[start_idx:end_idx]
 
-            advantages = b_returns - values.detach().squeeze(-1)
+                mb_states = b_states[mb_idx].to(device, non_blocking=True)
+                mb_masks = b_masks[mb_idx].to(device, non_blocking=True)
+                mb_actions = b_actions[mb_idx].to(device, non_blocking=True)
+                mb_returns = b_returns[mb_idx].to(device, non_blocking=True)
 
-            policy_loss = -(log_probs * advantages).mean()
-            value_loss = F.mse_loss(values.squeeze(-1), b_returns)
-            entropy_loss = -entropies.mean()
+                logits, values = model(mb_states, valid_mask=mb_masks)
+                dist = Categorical(logits=logits)
 
-            loss = policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
-            loss.backward()
+                log_probs = dist.log_prob(mb_actions)
+                entropies = dist.entropy()
+
+                advantages = mb_returns - values.detach().squeeze(-1)
+
+                policy_loss = -(log_probs * advantages).mean()
+                value_loss = F.mse_loss(values.squeeze(-1), mb_returns)
+                entropy_loss = -entropies.mean()
+
+                mb_loss = (
+                    policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
+                )
+
+                weight = len(mb_idx) / total_samples
+
+                # scales the loss by the ratio of the minibatch size to the total number of samples
+                scaled_loss = mb_loss * weight
+                scaled_loss.backward()
+
+                total_loss_accum += scaled_loss.item()
+                total_pol_accum += policy_loss.item() * weight
+                total_val_accum += value_loss.item() * weight
+                total_ent_accum += entropies.mean().item() * weight
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
 
-            # Flush off-policy data - drop old weights results
-            for i in range(num_envs):
-                env.histories[i].clear()
             finished_trajectories.clear()
+
+            # NOTE: mathematically is correct to reset envs that were created using previous weights, BUT this is very inefficient.
+            # the change (lr: 1e-4) in weights is small so it is negligible, but it introduce small off-policy bias.
+            # env.reset_all() # flush off-policy data - drop old weights results
 
             updates_count += 1
 
-            if updates_count % 10 == 0:
+            if updates_count % 20 == 0:
                 current_lr = scheduler.get_last_lr()[0]
                 print(
                     f"Games: {completed_games_count:6d}/{total_completed_games} | \n"
                     f"LR: {current_lr:.2e} | \n"
                     f"Wins -> X: {stats['X']}, O: {stats['O']}, Ties: {stats['Tie']} | \n"
-                    f"Loss: {loss.item():.4f} (Pol: {policy_loss.item():.4f}, Val: {value_loss.item():.4f}, Ent: {entropies.mean().item():.4f})"
+                    f"Loss: {total_loss_accum:.4f} (Pol: {total_pol_accum:.4f}, Val: {total_val_accum:.4f}, Ent: {total_ent_accum:.4f})"
                 )
                 stats = {"X": 0, "O": 0, "Tie": 0}
 
@@ -233,10 +242,10 @@ def train_batched(
                 # )
 
             if updates_count % checkpoint_interval == 0:
-                base_name = os.path.basename(save_path).replace(
+                base_name = os.path.basename(model_path).replace(
                     ".pt", f"_ckpt_{completed_games_count}.pt"
                 )
-                checkpoint_dir = "checkpoints"
+                checkpoint_dir = f"{save_path}/checkpoints"
                 checkpoint_path = os.path.join(checkpoint_dir, base_name)
 
                 os.makedirs(checkpoint_dir, exist_ok=True)
@@ -247,14 +256,13 @@ def train_batched(
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "scheduler_state_dict": scheduler.state_dict(),
-                        "loss": loss.item(),
+                        "loss": total_loss_accum,
                     },
                     checkpoint_path,
                 )
                 print(f"[*] Checkpoint saved: {checkpoint_path}")
 
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.state_dict(), save_path)
+    torch.save(model.state_dict(), os.path.join(save_path, model_path))
 
 
 if __name__ == "__main__":
@@ -262,11 +270,13 @@ if __name__ == "__main__":
         total_completed_games=10_000_000,
         num_envs=1024,
         batch_update_games=128,
-        checkpoint_interval=400,
+        minibatch_size=2048,
+        checkpoint_interval=800,
         rows=8,
         cols=8,
         lr=1e-4,
-        gamma=0.95,
-        entropy_coef=0.03,
+        gamma=1.0,
+        entropy_coef=0.05,
         value_coef=0.5,
+        save_path="rl_cnn/models/v2",
     )
