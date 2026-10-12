@@ -66,8 +66,8 @@ if __name__ == "__main__":
         choices=list(STRATEGIES.keys()),
         help="Select AI strategy: mc (Monte Carlo) or cnn (Reinforcement Learning)",
     )
-    parser.add_argument("--rows", type=int, default=6, help="Board rows")
-    parser.add_argument("--cols", type=int, default=6, help="Board columns")
+    parser.add_argument("--rows", type=int, default=8, help="Board rows")
+    parser.add_argument("--cols", type=int, default=8, help="Board columns")
     parser.add_argument(
         "--human-first", action="store_true", help="Set flag if human starts first"
     )
